@@ -3,7 +3,14 @@ const fs = require('fs');
 const path = require("path");
 const axios = require('axios');
 const FormData = require('form-data');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
+
+// Khởi tạo Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 const KEY_FILE_PATH = path.join(__dirname, 'drive-service-account.json');
 const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
 
@@ -12,7 +19,40 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR);
 }
 
-async function uploadToAPI(filePath, fileName) {
+async function syncBatchToAPI(fileName, docId, specName) {
+  console.log('docIddddddd', docId, specName, fileName)
+  try {
+    const response = await axios.post(
+      `${process.env.API_BASE_URL}${process.env.API_KNOWLEDGE_PATH}/${specName}${process.env.API_DOCUMENT_PATH}/sync_batch`,
+      [{
+        name: fileName,
+        doc_id: docId,
+        chunk_parameters: {
+          chunk_strategy: "Automatic"
+        }
+      }],
+      {
+        headers: {
+          'Accept': process.env.API_ACCEPT,
+          'Accept-Language': process.env.API_ACCEPT_LANGUAGE,
+          'Content-Type': 'application/json',
+          'Origin': process.env.API_ORIGIN,
+          'Proxy-Connection': 'keep-alive',
+          'Referer': process.env.API_REFERER,
+          'User-Agent': process.env.API_USER_AGENT
+        }
+      }
+    );
+
+    console.log(`✅ Đã sync batch cho file: ${fileName}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Lỗi khi sync batch cho file ${fileName}:`, err.message);
+    return false;
+  }
+}
+
+async function uploadToAPI(filePath, fileName, parentId) {
   try {
     // Kiểm tra file có tồn tại không
     if (!fs.existsSync(filePath)) {
@@ -26,25 +66,51 @@ async function uploadToAPI(filePath, fileName) {
       console.error(`❌ File rỗng: ${fileName}`);
       return false;
     }
+    
+    // Kiểm tra trong Supabase xem file đã tồn tại chưa
+    const { data: existingFile, error } = await supabase
+      .from('projects')
+      .select()
+      .eq("drive_folder", process.env.DRIVE_FOLDER_ID)
+      .single();
+    
+    if (error) {
+      // PGRST116 là mã lỗi "Không tìm thấy dữ liệu", nên ta bỏ qua lỗi này
+      console.error(`❌ Lỗi khi kiểm tra Supabase: ${error.message}`);
+      return false;
+    }
 
     const formData = new FormData();
     formData.append('doc_name', fileName);
     formData.append('doc_file', fs.createReadStream(filePath));
     formData.append('doc_type', 'DOCUMENT');
+    if (parentId) {
+      formData.append('parent_id', parentId);
+    }
 
-    const response = await axios.post('http://gpt.zen8labs.io/knowledge/test/document/upload', formData, {
-      headers: {
-        ...formData.getHeaders(),
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'http://gpt.zen8labs.io',
-        'Proxy-Connection': 'keep-alive',
-        'Referer': 'http://gpt.zen8labs.io/construct/knowledge',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
+    const specName = existingFile.db_space // Dùng giá trị mặc định thay vì existingFile.dn_space
+    const response = await axios.post(
+      `${process.env.API_BASE_URL}${process.env.API_KNOWLEDGE_PATH}/${specName}${process.env.API_DOCUMENT_PATH}/upload`, 
+      formData, 
+      {
+        headers: {
+          ...formData.getHeaders(),
+          'Accept': process.env.API_ACCEPT,
+          'Accept-Language': process.env.API_ACCEPT_LANGUAGE,
+          'Origin': process.env.API_ORIGIN,
+          'Proxy-Connection': 'keep-alive',
+          'Referer': process.env.API_REFERER,
+          'User-Agent': process.env.API_USER_AGENT
+        }
       }
-    });
+    );
 
-    console.log(`✅ Đã upload file lên API: ${fileName}`);
+    // Gọi sync batch sau khi upload thành công
+    if (response.data && response.data.data) {
+      await syncBatchToAPI(fileName, response.data.data, specName);
+    }
+
+    console.log(`✅ Đã upload file lên API: ${fileName}${parentId ? ` (ParentID: ${parentId})` : ''}`);
     return true;
   } catch (err) {
     console.error(`❌ Lỗi khi upload file ${fileName} lên API:`, err.message);
@@ -52,7 +118,7 @@ async function uploadToAPI(filePath, fileName) {
   }
 }
 
-async function downloadFile(drive, fileId, fileName) {
+async function downloadFile(drive, fileId, fileName, parentId) {
   try {
     const dest = path.join(DOWNLOADS_DIR, fileName);
     const res = await drive.files.get(
@@ -63,9 +129,9 @@ async function downloadFile(drive, fileId, fileName) {
     const destFile = fs.createWriteStream(dest);
     res.data
       .on('end', async () => {
-        console.log(`✅ Đã tải file: ${fileName}`);
+        console.log(`✅ Đã tải file: ${fileName}${parentId ? ` (ParentID: ${parentId})` : ''}`);
         // Upload file lên API
-        const uploadSuccess = await uploadToAPI(dest, fileName);
+        const uploadSuccess = await uploadToAPI(dest, fileName, parentId);
         if (uploadSuccess && fs.existsSync(dest)) {
           // Xóa file sau khi upload thành công
           fs.unlinkSync(dest);
@@ -104,17 +170,18 @@ async function fetchChanges() {
 
     const res = await drive.changes.list({
       pageToken: pageToken,
-      spaces: 'drive'
+      spaces: 'drive',
+      fields: 'changes(fileId,file(id,name,parents)),newStartPageToken'
     });
 
     const changes = res.data.changes || [];
 
     if (changes.length > 0) {
-      console.log('🔄 Changes:');
       for (const change of changes) {
-        console.log(`📂 File: ${change.file?.name} (${change.fileId})`);
+        const parentId = change.file?.parents?.[0] || null;
+        console.log(`📂 File: ${change.file?.name} (${change.fileId})${parentId ? ` ParentID: ${parentId}` : ''}`);
         if (change.file?.name) {
-          await downloadFile(drive, change.fileId, change.file.name);
+          await downloadFile(drive, change.fileId, change.file.name, parentId);
         }
       }
     } else {
