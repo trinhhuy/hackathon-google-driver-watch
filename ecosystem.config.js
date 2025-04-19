@@ -12,17 +12,6 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3001
       }
-    },
-    {
-      name: 'watcher',
-      script: 'watchFolder.js',
-      watch: false,
-      env: {
-        NODE_ENV: 'development'
-      },
-      env_production: {
-        NODE_ENV: 'production'
-      }
     }
   ]
 }; 
