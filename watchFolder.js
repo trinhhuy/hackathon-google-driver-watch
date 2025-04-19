@@ -51,4 +51,4 @@ async function watchFolder(folderId) {
 }
 
 // REPLACE with your folder ID
-watchFolder('1s2NaVJX8C45bSJ7w_p6--iqEksaxAywW').catch(console.error);
+watchFolder(process.env.DRIVE_FOLDER_ID).catch(console.error);
