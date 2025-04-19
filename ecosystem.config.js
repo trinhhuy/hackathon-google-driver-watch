@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'server',
       script: 'server.js',
-      watch: true,
+      watch: false,
       env: {
         NODE_ENV: 'development',
         PORT: 3001
@@ -16,7 +16,7 @@ module.exports = {
     {
       name: 'watcher',
       script: 'watchFolder.js',
-      watch: true,
+      watch: false,
       env: {
         NODE_ENV: 'development'
       },
